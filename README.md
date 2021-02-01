@@ -17,6 +17,7 @@ To get started with Prison Roleplay, you need the following tools installed on y
 - [SampSharp](https://github.com/ikkentim/SampSharp) To be ble to access SA:MP API from C#
 - [SA:MP Server](https://www.sa-mp.com/download.php) To be able to run the server
 - [MariaDB](https://mariadb.org/download/) or [MySQL](https://dev.mysql.com/downloads/mysql/) For the server data persistency
+- [Seq](https://datalust.co/seq) For easier log viewing (Optional) 
 
 ### First Time Build & Run
 
@@ -24,7 +25,7 @@ Clone the repository to your computer using Git (Or the GitHub desktop app, if
 you prefer that)
 
 ```
-git clone 
+git clone https://github.com/CiprianN23/PrisonRP.git
 ```
 
 ##### Windows
