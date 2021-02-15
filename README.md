@@ -1,7 +1,8 @@
 # Prison Roleplay
 
-## This is a learning project with many mistakes, things that could be done better and is not intended for production use.
-## This project based on High Desert Prison Roleplay made by $Marco$. This is a conversion from Pawn to C#.
+## Disclaimer
+### This is a learning project with many mistakes, things that could be done better and is not intended for production use.
+### This project based on High Desert Prison Roleplay made by $Marco$. This is a conversion from Pawn to C#.
 
 ## Overview
 Prison Roleplay is a Roleplay SA:MP gamemode. The aim of the game is to survive and prosper in the prison harh prison conditions.
