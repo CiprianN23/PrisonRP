@@ -1,14 +1,8 @@
 ﻿using SampSharp.Entities;
 
-namespace PrisonRP.GameMode.Features.Players.Account
+namespace PrisonRP.GameMode.Features.Players.Account;
+
+public class LoginTriesComponent : Component
 {
-    public class LoginTriesComponent : Component
-    {
-
-        public LoginTriesComponent()
-        {
-        }
-
-        public int LoginTries { get; set; }
-    }
+    public int LoginTries { get; set; }
 }

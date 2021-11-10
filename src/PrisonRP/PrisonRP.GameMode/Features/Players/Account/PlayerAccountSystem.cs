@@ -1,305 +1,302 @@
-﻿using PrisonRP.Database.Interfaces;
-using PrisonRP.Database.Models;
+﻿using Microsoft.EntityFrameworkCore;
+using PrisonRP.Data;
+using PrisonRP.Data.Models;
 using PrisonRP.GameMode.Utilities;
-using RepoDb;
 using SampSharp.Entities;
 using SampSharp.Entities.SAMP;
 using SampSharp.Entities.SAMP.Commands;
-using System;
 
-namespace PrisonRP.GameMode.Features.Players.Account
+namespace PrisonRP.GameMode.Features.Players.Account;
+
+public class PlayerAccountSystem : ISystem
 {
-    public class PlayerAccountSystem : ISystem
+    private readonly IDialogService _dialogService;
+    private readonly ITimerService _timerService;
+
+    public PlayerAccountSystem(IDialogService dialogService, ITimerService timerService)
     {
-        private IDialogService _dialogService;
-        private IPlayerAccountRepository _playerAccountRepository;
-        private ITimerService _timerService;
+        _dialogService = dialogService;
+        _timerService = timerService;
+    }
 
-        public PlayerAccountSystem(IDialogService dialogService, IPlayerAccountRepository playerAccountRepository, ITimerService timerService)
+    [Event]
+    public void OnPlayerConnect(Player player, ApplicationContext prisonContext)
+    {
+        TimerReference? timer = null;
+        timer = _timerService.Start(_ =>
         {
-            _dialogService = dialogService;
-            _playerAccountRepository = playerAccountRepository;
-            _timerService = timerService;
-        }
+            LoginOrRegisterUser(player, prisonContext);
+            _timerService.Stop(timer);
+        }, TimeSpan.FromSeconds(1));
+    }
 
-        [Event]
-        public void OnPlayerConnect(Player player)
+    private void LoginOrRegisterUser(Player player, ApplicationContext prisonContext)
+    {
+        if (!player.IsComponentAlive)
+            return;
+
+        var playerAccountDb = player.AddComponent<PlayerAccountComponent>(prisonContext.Users.Include(y => y.Faction).FirstOrDefault(x => x.Name == player.Name));
+        if (playerAccountDb.Account is null)
         {
-            TimerReference timer = null;
-            timer = _timerService.Start(_ =>
+            var registerDialog = new InputDialog() { IsPassword = true, Caption = "Register", Content = "Input your password below to register a new account.", Button1 = "Register", Button2 = "Exit" };
+
+            void RegisterDialogHandler(InputDialogResponse r)
             {
-                LoginOrRegisterUser(player);
-                _timerService.Stop(timer);
-            }, TimeSpan.FromSeconds(1));
-        }
-
-        private void LoginOrRegisterUser(Player player)
-        {
-            if (!player.IsComponentAlive)
-                return;
-
-            var playerAccountDb = _playerAccountRepository.Get(player.Name);
-            if (playerAccountDb is null)
-            {
-                var registerDialog = new InputDialog() { IsPassword = true, Caption = "Register", Content = "Input your password below to register a new account.", Button1 = "Register", Button2 = "Exit" };
-
-                async void RegisterDialogHandler(InputDialogResponse r)
+                if (r.Response == DialogResponse.LeftButton)
                 {
-                    if (r.Response == DialogResponse.LeftButton)
+                    if (string.IsNullOrEmpty(r.InputText))
                     {
-                        if (string.IsNullOrEmpty(r.InputText))
-                        {
-                            player.SendClientMessage(Color.Red, "Password can't be empty.");
-                            _dialogService.Show(player.Entity, registerDialog, RegisterDialogHandler);
-                            return;
-                        }
-
-                        if (r.InputText.Length < 8)
-                        {
-                            player.SendClientMessage(Color.Red, "Password must be at least 8 characters long.");
-                            _dialogService.Show(player.Entity, registerDialog, RegisterDialogHandler);
-                            return;
-                        }
-
-                        var playerAccount = new PlayerAccount() { Name = player.Name, Password = BCrypt.Net.BCrypt.EnhancedHashPassword(r.InputText) };
-                        await _playerAccountRepository.InsertAsync(playerAccount, Field.From("Name", "Password"));
-
-                        player.SendClientMessage(Color.Gray, "You have successfully created an account and auto logged in.");
-                        player.AddComponent<IsLoggedInComponent>();
-
-                        ShowSelectGenderDialog(player);
+                        player.SendClientMessage(Color.Red, "Password can't be empty.");
+                        _dialogService.Show(player.Entity, registerDialog, RegisterDialogHandler);
+                        return;
                     }
-                    else if (r.Response == DialogResponse.RightButtonOrCancel)
+
+                    if (r.InputText.Length < 8)
                     {
-                        player.Kick();
+                        player.SendClientMessage(Color.Red, "Password must be at least 8 characters long.");
+                        _dialogService.Show(player.Entity, registerDialog, RegisterDialogHandler);
+                        return;
                     }
+
+                    var playerAccount = new User() { Name = player.Name, Password = BCrypt.Net.BCrypt.EnhancedHashPassword(r.InputText), Faction = prisonContext.Factions.Find(1) };
+                    var databaseAccount = prisonContext.Users.Add(playerAccount);
+                    player.GetComponent<PlayerAccountComponent>().Account = databaseAccount.Entity;
+                    prisonContext.SaveChanges();
+
+                    player.SendClientMessage(Color.Gray, "You have successfully created an account and auto logged in.");
+                    player.AddComponent<IsLoggedInComponent>();
+
+                    ShowSelectGenderDialog(player, prisonContext);
                 }
-
-                _dialogService.Show(player.Entity, registerDialog, RegisterDialogHandler);
-            }
-            else
-            {
-                var playerLoginTries = player.AddComponent<LoginTriesComponent>();
-
-                var loginDialog = new InputDialog() { IsPassword = true, Caption = "Login", Content = "Input your password below to login.", Button1 = "Login", Button2 = "Exit" };
-
-                void LoginDialogHandler(InputDialogResponse response)
+                else if (r.Response == DialogResponse.RightButtonOrCancel)
                 {
-                    if (response.Response == DialogResponse.LeftButton)
-                    {
-                        if (BCrypt.Net.BCrypt.EnhancedVerify(response.InputText, playerAccountDb.Password) == false)
-                        {
-                            playerLoginTries.LoginTries++;
+                    player.Kick();
+                }
+            }
 
-                            if (playerLoginTries.LoginTries >= 5)
+            _dialogService.Show(player.Entity, registerDialog, RegisterDialogHandler);
+        }
+        else
+        {
+            var playerLoginTries = player.AddComponent<LoginTriesComponent>();
+
+            var loginDialog = new InputDialog() { IsPassword = true, Caption = "Login", Content = "Input your password below to login.", Button1 = "Login", Button2 = "Exit" };
+
+            void LoginDialogHandler(InputDialogResponse response)
+            {
+                if (response.Response == DialogResponse.LeftButton)
+                {
+                    if (!BCrypt.Net.BCrypt.EnhancedVerify(response.InputText, playerAccountDb.Account.Password))
+                    {
+                        playerLoginTries.LoginTries++;
+
+                        if (playerLoginTries.LoginTries >= 5)
+                        {
+                            player.SendClientMessage(Color.Red, "You exceeded the numbeer of allowed logins. You can try again in 24 hours.");
+
+                            TimerReference? timer = null;
+                            timer = _timerService.Start(_ =>
                             {
-                                player.SendClientMessage(Color.Red, "You exceeded the numbeer of allowed logins. You can try again in 24 hours.");
-
-                                TimerReference timer = null;
-                                timer = _timerService.Start(_ =>
-                                {
-                                    // TODO: Add temporary ban for 24h
-                                    player.Kick();
-                                    _timerService.Stop(timer);
-                                }, TimeSpan.FromSeconds(1));
-                            }
-
-                            _dialogService.Show(player.Entity, loginDialog, LoginDialogHandler);
+                                // TODO: Add temporary ban for 24h
+                                player.Kick();
+                                _timerService.Stop(timer);
+                            }, TimeSpan.FromSeconds(1));
                         }
-                        else
-                        {
-                            player.DestroyComponents<LoginTriesComponent>();
-                            player.AddComponent<IsLoggedInComponent>();
-                            SpawnPlayer(player);
-                        }
+
+                        _dialogService.Show(player.Entity, loginDialog, LoginDialogHandler);
                     }
-                    else if (response.Response == DialogResponse.RightButtonOrCancel)
+                    else
                     {
-                        player.Kick();
+                        player.DestroyComponents<LoginTriesComponent>();
+                        player.AddComponent<IsLoggedInComponent>();
+                        SpawnPlayer(player);
                     }
                 }
-
-                _dialogService.Show(player.Entity, loginDialog, LoginDialogHandler);
+                else if (response.Response == DialogResponse.RightButtonOrCancel)
+                {
+                    player.Kick();
+                }
             }
-        }
 
-        private void ShowSelectGenderDialog(Player player)
-        {
-            var genderDialog = new ListDialog("Are you a male or a female?", "Next", "")
+            _dialogService.Show(player.Entity, loginDialog, LoginDialogHandler);
+        }
+    }
+
+    private void ShowSelectGenderDialog(Player player, ApplicationContext prisonContext)
+    {
+        var genderDialog = new ListDialog("Are you a male or a female?", "Next", "")
             {
                 "Female",
                 "Male"
             };
 
-            async void GenderDialogHaaandler(ListDialogResponse r)
+        void GenderDialogHandler(ListDialogResponse r)
+        {
+            if (r.Response == DialogResponse.RightButtonOrCancel)
             {
-                if (r.Response == DialogResponse.RightButtonOrCancel)
+                _dialogService.Show(player.Entity, genderDialog, GenderDialogHandler);
+                return;
+            }
+            else
+            {
+                var playerAccount = player.GetComponent<PlayerAccountComponent>();
+
+                if (r.ItemIndex == 0)
                 {
-                    _dialogService.Show(player.Entity, genderDialog, GenderDialogHaaandler);
-                    return;
+                    playerAccount.Account.LastSkin = 191;
+                    player.SendClientMessage(Color.Gray, "So, you are a female.");
                 }
                 else
                 {
-                    var playerAccount = _playerAccountRepository.Get(player.Name);
-
-                    if (r.ItemIndex == 0)
-                    {
-                        playerAccount.LastSkin = 191;
-                        player.SendClientMessage(Color.Gray, "So, you are a female.");
-                    }
-                    else
-                    {
-                        playerAccount.LastSkin = 50;
-                        player.SendClientMessage(Color.Gray, "So, you are a male.");
-                    }
-
-                    playerAccount.Gender = r.ItemIndex;
-                    await _playerAccountRepository.UpdateAsync(playerAccount, Field.From("Gender", "LastSkin"));
-
-                    ShowAgeInputDialog(player);
+                    playerAccount.Account.LastSkin = 50;
+                    player.SendClientMessage(Color.Gray, "So, you are a male.");
                 }
+
+                playerAccount.Account.Gender = r.ItemIndex;
+                prisonContext.SaveChanges();
+
+                ShowAgeInputDialog(player, prisonContext);
+            }
+        }
+
+        _dialogService.Show(player.Entity, genderDialog, GenderDialogHandler);
+    }
+
+    private void ShowAgeInputDialog(Player player, ApplicationContext prisonContext)
+    {
+        var ageDialog = new InputDialog() { Caption = "You need to type your age and press on 'Next'", Content = "Input your age below.", Button1 = "Next", Button2 = "" };
+
+        void AgeDialogHandlerAsync(InputDialogResponse r)
+        {
+            if (!InputValidation.IsInputValidAge(r.InputText))
+            {
+                player.SendClientMessage(Color.Gray, "Your age must be a valid number between 18 and 70.");
+                _dialogService.Show(player.Entity, ageDialog, AgeDialogHandlerAsync);
+            }
+            else
+            {
+                var playerAccount = player.GetComponent<PlayerAccountComponent>();
+                playerAccount.Account.Age = int.Parse(r.InputText);
+                prisonContext.SaveChanges();
+
+                player.SendClientMessage(Color.Gray, $"And you are {r.InputText}. Why are are you in prison?");
+                ShowReasonDialog(player, prisonContext);
+            }
+        }
+
+        _dialogService.Show(player.Entity, ageDialog, AgeDialogHandlerAsync);
+    }
+
+    private void ShowReasonDialog(Player player, ApplicationContext prisonContext)
+    {
+        var reasonDialog = new InputDialog() { Caption = "Why were you imprisoned?", Content = "Type the reason below and press on Done.", Button1 = "Done", Button2 = "" };
+
+        void ReasonDialogHandler(InputDialogResponse r)
+        {
+            if (string.IsNullOrEmpty(r.InputText))
+            {
+                player.SendClientMessage(Color.Gray, "You must enter the reason below.");
+                _dialogService.Show(player.Entity, reasonDialog, ReasonDialogHandler);
+                return;
             }
 
-            _dialogService.Show(player.Entity, genderDialog, GenderDialogHaaandler);
-        }
-
-        private void ShowAgeInputDialog(Player player)
-        {
-            var ageDialog = new InputDialog() { Caption = "You need to type your age and press on 'Next'", Content = "Input your age below.", Button1 = "Next", Button2 = "" };
-
-            async void AgeDialogHandlerAsync(InputDialogResponse r)
+            if (r.InputText.Length < 4 && r.InputText.Length > 20)
             {
-                if (InputValidation.IsInputValidAge(r.InputText) == false)
-                {
-                    player.SendClientMessage(Color.Gray, "Your age must be a valid number between 18 and 70.");
-                    _dialogService.Show(player.Entity, ageDialog, AgeDialogHandlerAsync);
-                    return;
-                }
-                else
-                {
-                    var playerAccount = _playerAccountRepository.Get(player.Name);
-                    playerAccount.Age = int.Parse(r.InputText);
-                    await _playerAccountRepository.UpdateAsync(playerAccount, Field.From("Age"));
-
-                    player.SendClientMessage(Color.Gray, $"And you are {r.InputText}. Why are are you in prison?");
-                    ShowReasonDialog(player);
-                }
+                player.SendClientMessage(Color.Gray, "Reason must be between 4 and 20 characters.");
+                _dialogService.Show(player.Entity, reasonDialog, ReasonDialogHandler);
+                return;
             }
 
-            _dialogService.Show(player.Entity, ageDialog, AgeDialogHandlerAsync);
+            var playerAccount = player.GetComponent<PlayerAccountComponent>();
+            playerAccount.Account.ImprisonmentReason = r.InputText;
+            prisonContext.SaveChanges();
+
+            SpawnPlayer(player);
         }
 
-        private void ShowReasonDialog(Player player)
+        _dialogService.Show(player.Entity, reasonDialog, ReasonDialogHandler);
+    }
+
+    private void SpawnPlayer(Player player)
+    {
+        var playerAccount = player.GetComponent<PlayerAccountComponent>().Account;
+
+        player.ToggleSpectating(false);
+        player.SetSpawnInfo(0, playerAccount.LastSkin, new Vector3(playerAccount.LastPositionX, playerAccount.LastPositionY, playerAccount.LastPositionZ), playerAccount.LastPositionAngle);
+        player.Spawn();
+        player.ToggleControllable(false);
+
+        TimerReference? timer = null;
+        timer = _timerService.Start(_ =>
         {
-            var reasonDialog = new InputDialog() { Caption = "Why were you imprisoned?", Content = "Type the reason below and press on Done.", Button1 = "Done", Button2 = "" };
+            player.ToggleControllable(true);
+            _timerService.Stop(timer);
+        }, TimeSpan.FromSeconds(3));
 
-            async void ReasonDialogHandler(InputDialogResponse r)
+        player.ResetMoney();
+        player.GiveMoney(playerAccount.Money);
+        player.Interior = playerAccount.LastInterior;
+        player.VirtualWorld = playerAccount.LastWorld;
+        player.Health = playerAccount.Health;
+        player.Armour = playerAccount.Armour;
+
+        player.PutCameraBehindPlayer();
+        player.FightStyle = (FightStyle)playerAccount.FightStyle;
+    }
+
+    [PlayerCommand]
+    public void ChangePasswordCommand(IsLoggedInComponent isLoggedInComponent, ApplicationContext prisonContext)
+    {
+        var player = isLoggedInComponent.GetComponent<Player>();
+        var oldPaasswordDialog = new InputDialog() { IsPassword = true, Caption = "Change password", Content = "Please input below your old password", Button1 = "Accept", Button2 = "Close" };
+
+        void OldPasswordDialogHandler(InputDialogResponse oldPasswordResponse)
+        {
+            if (oldPasswordResponse.Response == DialogResponse.RightButtonOrCancel)
+                return;
+
+            if (string.IsNullOrEmpty(oldPasswordResponse.InputText))
             {
-                if (string.IsNullOrEmpty(r.InputText))
-                {
-                    player.SendClientMessage(Color.Gray, "You must enter the reason below.");
-                    _dialogService.Show(player.Entity, reasonDialog, ReasonDialogHandler);
-                    return;
-                }
-
-                if (r.InputText.Length < 4 && r.InputText.Length > 20)
-                {
-                    player.SendClientMessage(Color.Gray, "Reason must be between 4 and 20 characters.");
-                    _dialogService.Show(player.Entity, reasonDialog, ReasonDialogHandler);
-                    return;
-                }
-
-                var playerAccount = _playerAccountRepository.Get(player.Name);
-                playerAccount.ImprisonmentReason = r.InputText;
-                await _playerAccountRepository.UpdateAsync(playerAccount, Field.From("ImprisonmentReason"));
-
-                SpawnPlayer(player);
+                _dialogService.Show(player.Entity, oldPaasswordDialog, OldPasswordDialogHandler);
+                return;
             }
 
-            _dialogService.Show(player.Entity, reasonDialog, ReasonDialogHandler);
-        }
+            var playerAccount = player.GetComponent<PlayerAccountComponent>().Account;
 
-        private void SpawnPlayer(Player player)
-        {
-            var playerAccount = _playerAccountRepository.Get(player.Name);
-
-            player.ToggleSpectating(false);
-            player.SetSpawnInfo(0, playerAccount.LastSkin, new Vector3(playerAccount.LastPositionX, playerAccount.LastPositionY, playerAccount.LastPositionZ), playerAccount.LastPositionAngle);
-            player.Spawn();
-            player.ToggleControllable(false);
-
-            TimerReference timer = null;
-            timer = _timerService.Start(_ => 
+            if (!BCrypt.Net.BCrypt.EnhancedVerify(oldPasswordResponse.InputText, playerAccount.Password))
             {
-                player.ToggleControllable(true);
-                _timerService.Stop(timer);
-            }, TimeSpan.FromSeconds(3));
-
-            player.ResetMoney();
-            player.GiveMoney(playerAccount.Money);
-            player.Interior = playerAccount.LastInterior;
-            player.VirtualWorld = playerAccount.LastWorld;
-            player.Health = playerAccount.Health;
-            player.Armour = playerAccount.Armour;
-
-            player.PutCameraBehindPlayer();
-            player.FightStyle = (FightStyle)playerAccount.FightStyle;
-        }
-
-        [PlayerCommand]
-        public void ChangePasswordCommand(IsLoggedInComponent isLoggedInComponent)
-        {
-            var player = isLoggedInComponent.GetComponent<Player>();
-            var oldPaasswordDialog = new InputDialog() { IsPassword = true, Caption = "Change password", Content = "Please input below your old password", Button1 = "Accept", Button2 = "Close"};
-
-            void OldPasswordDialogHandler(InputDialogResponse oldPasswordResponse)
-            {
-                if (oldPasswordResponse.Response == DialogResponse.RightButtonOrCancel)
-                    return;
-
-                if (string.IsNullOrEmpty(oldPasswordResponse.InputText))
-                {
-                    _dialogService.Show(player.Entity, oldPaasswordDialog, OldPasswordDialogHandler);
-                    return;
-                }
-
-                var playerAccount = _playerAccountRepository.Get(player.Name, Field.From("Id", "Password"));
-
-                if (BCrypt.Net.BCrypt.EnhancedVerify(oldPasswordResponse.InputText, playerAccount.Password) == false)
-                {
-                    player.SendClientMessage(Color.Red, "Password don't match. Try again!");
-                    _dialogService.Show(player.Entity, oldPaasswordDialog, OldPasswordDialogHandler);
-                    return;
-                }
-
-                var newPasswordDialog = new InputDialog() { IsPassword = true, Caption = "Change password", Content = "Please input below your new password", Button1 = "Accept", Button2 = "Close" };
-
-                async void NewPasswordDialogHandlerAsync(InputDialogResponse newPasswordResponse)
-                {
-                    if (string.IsNullOrEmpty(newPasswordResponse.InputText))
-                    {
-                        player.SendClientMessage(Color.Red, "Password can't be empty.");
-                        _dialogService.Show(player.Entity, newPasswordDialog, NewPasswordDialogHandlerAsync);
-                        return;
-                    }
-
-                    if (newPasswordResponse.InputText.Length < 8)
-                    {
-                        player.SendClientMessage(Color.Red, "Password must be at least 8 characters long.");
-                        _dialogService.Show(player.Entity, newPasswordDialog, NewPasswordDialogHandlerAsync);
-                        return;
-                    }
-
-                    playerAccount.Password = BCrypt.Net.BCrypt.EnhancedHashPassword(newPasswordResponse.InputText);
-                    await _playerAccountRepository.UpdateAsync(playerAccount, Field.From("Password"));
-
-                    player.SendClientMessage(Color.GreenYellow, "Your password successfully changed!");
-                }
-
-                _dialogService.Show(player.Entity, newPasswordDialog, NewPasswordDialogHandlerAsync);
+                player.SendClientMessage(Color.Red, "Password don't match. Try again!");
+                _dialogService.Show(player.Entity, oldPaasswordDialog, OldPasswordDialogHandler);
+                return;
             }
 
-            _dialogService.Show(player.Entity, oldPaasswordDialog, OldPasswordDialogHandler);
+            var newPasswordDialog = new InputDialog() { IsPassword = true, Caption = "Change password", Content = "Please input below your new password", Button1 = "Accept", Button2 = "Close" };
+
+            void NewPasswordDialogHandlerAsync(InputDialogResponse newPasswordResponse)
+            {
+                if (string.IsNullOrEmpty(newPasswordResponse.InputText))
+                {
+                    player.SendClientMessage(Color.Red, "Password can't be empty.");
+                    _dialogService.Show(player.Entity, newPasswordDialog, NewPasswordDialogHandlerAsync);
+                    return;
+                }
+
+                if (newPasswordResponse.InputText.Length < 8)
+                {
+                    player.SendClientMessage(Color.Red, "Password must be at least 8 characters long.");
+                    _dialogService.Show(player.Entity, newPasswordDialog, NewPasswordDialogHandlerAsync);
+                    return;
+                }
+
+                playerAccount.Password = BCrypt.Net.BCrypt.EnhancedHashPassword(newPasswordResponse.InputText);
+                prisonContext.SaveChanges();
+
+                player.SendClientMessage(Color.GreenYellow, "Your password successfully changed!");
+            }
+
+            _dialogService.Show(player.Entity, newPasswordDialog, NewPasswordDialogHandlerAsync);
         }
+
+        _dialogService.Show(player.Entity, oldPaasswordDialog, OldPasswordDialogHandler);
     }
 }
